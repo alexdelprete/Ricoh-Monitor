@@ -1,0 +1,13 @@
+# Runtime / deployment artifacts
+printers_config.json
+report_*.html
+
+# PS2EXE build outputs
+*.exe
+*.zip
+
+# Editor/IDE junk
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
