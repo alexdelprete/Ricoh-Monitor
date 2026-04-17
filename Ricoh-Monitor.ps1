@@ -480,7 +480,7 @@ function Get-SnmpValueFromResponse {
         if ($outer.Tag -ne 0x30) { return $null }
         $p = $outer.DataOffset
 
-        foreach ($_ in 1..2) {   # skip version, community
+        for ($i = 0; $i -lt 2; $i++) {   # skip version, community
             $h = Read-BerHeader $Response $p
             $p += $h.HeaderLength + $h.Length
         }
@@ -489,7 +489,7 @@ function Get-SnmpValueFromResponse {
         if ($pdu.Tag -ne 0xA2) { return $null }   # must be GetResponse-PDU
         $p = $pdu.DataOffset
 
-        foreach ($_ in 1..3) {   # skip request-id, error-status, error-index
+        for ($i = 0; $i -lt 3; $i++) {   # skip request-id, error-status, error-index
             $h = Read-BerHeader $Response $p
             $p += $h.HeaderLength + $h.Length
         }
@@ -790,8 +790,8 @@ function Format-PrinterCard {
       <td class="card-ip">$ip</td>
     </tr>
     <tr class="meta">
-      <td>SN $($printer['Serial Number'])</td>
-      <td class="card-mac">$($printer['MAC Address'])</td>
+      <td>S/N: $($printer['Serial Number'])</td>
+      <td class="card-mac">MAC: $($printer['MAC Address'])</td>
     </tr>
   </table>
   <table class="grid">
@@ -1027,7 +1027,7 @@ function Send-Report {
 function Get-LocalSubnetCidr {
     try {
         $cfg = Get-NetIPConfiguration -ErrorAction Stop |
-            Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq 'Up' } |
+            Where-Object { $null -ne $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
             Select-Object -First 1
     }
     catch {
