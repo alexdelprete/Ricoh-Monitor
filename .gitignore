@@ -1,5 +1,5 @@
 # Runtime / deployment artifacts
-printers_config.json
+Ricoh-Monitor.json
 report_*.html
 
 # PS2EXE build outputs

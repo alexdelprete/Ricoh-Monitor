@@ -27,21 +27,32 @@
     Run discovery instead of normal monitoring. Scans the local NIC's subnet
     (auto-detected) for Ricoh printers; if none are found there, prompts for
     additional CIDR ranges to scan. Discovered printers can be optionally
-    added to printers_config.json.
+    added to Ricoh-Monitor.json.
 
 .PARAMETER TestSnmp
     Diagnostic: send raw SNMP GetRequest packets to the given IP for MAC
     and device-IP OIDs. Dumps the encoded request, the raw response, and
     the parsed value. Use when the MAC/IP fields come back Unavailable to
     see where the pipeline is failing.
+
+.PARAMETER TestSmtp
+    Diagnostic: sends a small test email using the Smtp section from
+    Ricoh-Monitor.json. Prints each step (config summary, send result,
+    and the real error text if it fails) so SMTP problems can be debugged
+    in isolation without running a full monitoring pass.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+    Justification = 'Interactive CLI; Write-Host is the correct tool for colored console output and is not captured as pipeline data.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '',
+    Justification = 'Password is read from the local Ricoh-Monitor.json config (by design outside source control) and must be converted to a SecureString to build the PSCredential for Send-MailMessage.')]
 param(
     [switch]$Discover,
-    [string]$TestSnmp
+    [string]$TestSnmp,
+    [switch]$TestSmtp
 )
 
-# SMTP settings live in printers_config.json (the Smtp section), not in the
+# SMTP settings live in Ricoh-Monitor.json (the Smtp section), not in the
 # script. This keeps credentials out of the repo and makes it possible to ship
 # the same script/EXE to multiple sites without recompiling.
 
@@ -114,7 +125,7 @@ $OIDs = [ordered]@{
 # -----------------------------------------------------------------------------
 # Get-PrintersConfig
 #
-# Loads printers_config.json from the working directory and returns the parsed
+# Loads Ricoh-Monitor.json from the working directory and returns the parsed
 # object. The file is expected to exist by the time this is called - main
 # triggers Invoke-FirstRunDiscovery on first run to create it.
 #
@@ -123,7 +134,7 @@ $OIDs = [ordered]@{
 # -----------------------------------------------------------------------------
 function Get-PrintersConfig {
     param(
-        [string]$ConfigPath = "printers_config.json"
+        [string]$ConfigPath = "Ricoh-Monitor.json"
     )
 
     if (-not (Test-Path $ConfigPath)) {
@@ -277,7 +288,7 @@ function Get-SnmpData {
 
             $snmp.Close()
 
-            # Fetch MAC and device-reported IP via raw SNMP — both have SNMP
+            # Fetch MAC and device-reported IP via raw SNMP - both have SNMP
             # types (OctetString w/ high bytes, IpAddress) that OlePrn mangles
             # through its UTF-8 marshalling path. Raw UDP+BER preserves bytes.
             $mac = Get-SnmpMacAddress -IP $IP -SnmpCommunity $SnmpCommunity
@@ -401,6 +412,8 @@ function Add-BerTlv {
 
 # Builds a complete SNMPv2c GetRequest packet for one OID. Returns byte[].
 function New-SnmpGetRequest {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure builder function; returns bytes, changes no external state.')]
     param(
         [string]$SnmpCommunity,
         [string]$Oid,
@@ -946,6 +959,68 @@ function Build-HtmlReport {
 #   - When SendEmail = $true and a valid Smtp section is in the config, the
 #     same HTML is also emailed via Send-MailMessage.
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Invoke-SmtpTest
+#
+# Loads Ricoh-Monitor.json and sends a small test email via Send-MailMessage
+# using the Smtp section. Prints every configured field before the send so
+# typos are obvious in the output. Used by -TestSmtp.
+# -----------------------------------------------------------------------------
+function Invoke-SmtpTest {
+    $config = Get-PrintersConfig
+    $smtp   = $config.Smtp
+
+    if (-not $smtp -or [string]::IsNullOrWhiteSpace("$($smtp.Server)")) {
+        Write-Host "Smtp section missing or empty in Ricoh-Monitor.json." -ForegroundColor Red
+        Write-Host "Add Smtp.{Server, Port, Username, Password, From, To} and re-run." -ForegroundColor Red
+        return
+    }
+
+    $date = Get-Date -Format "dd-MM-yyyy HH:mm"
+    Write-Host "=== SMTP Test ===" -ForegroundColor Cyan
+    Write-Host ("  Server:   {0}:{1}" -f $smtp.Server, $smtp.Port)
+    Write-Host ("  Username: {0}" -f $smtp.Username)
+    Write-Host ("  From:     {0}" -f $smtp.From)
+    Write-Host ("  To:       {0}" -f (@($smtp.To) -join ', '))
+    Write-Host ""
+
+    $subject = "RICOH Monitor SMTP test - $date"
+    $body    = @"
+<html><body style="font-family:Arial,sans-serif;color:#2d3748;">
+<h2 style="color:#1a202c;">RICOH Monitor - SMTP test</h2>
+<p>This is a test message generated by <code>Ricoh-Monitor.ps1 -TestSmtp</code>.</p>
+<p>If you can see this email, the SMTP section of <code>Ricoh-Monitor.json</code> is working correctly.</p>
+<p style="color:#718096;font-size:12px;">Sent at $date</p>
+</body></html>
+"@
+
+    # Force TLS 1.2 - PS 5.1's Send-MailMessage otherwise negotiates TLS 1.0.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    $credential = New-Object System.Management.Automation.PSCredential (
+        $smtp.Username,
+        (ConvertTo-SecureString "$($smtp.Password)" -AsPlainText -Force)
+    )
+
+    try {
+        Send-MailMessage -From $smtp.From `
+                        -To $smtp.To `
+                        -Subject $subject `
+                        -Body $body `
+                        -BodyAsHtml `
+                        -SmtpServer $smtp.Server `
+                        -Port ([int]$smtp.Port) `
+                        -UseSsl `
+                        -Credential $credential `
+                        -ErrorAction Stop `
+                        -WarningAction SilentlyContinue
+        Write-Host "Test email sent successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "Test email failed: $_" -ForegroundColor Red
+    }
+}
+
 function Send-Report {
     param(
         [array]$PrintersData,
@@ -971,7 +1046,7 @@ function Send-Report {
     # Validate the SMTP block before attempting a send so a missing/empty
     # config produces a clear message instead of a Send-MailMessage error.
     if (-not $SmtpConfig -or [string]::IsNullOrWhiteSpace("$($SmtpConfig.Server)")) {
-        Write-Host "SendEmail is true but the 'Smtp' section in printers_config.json is missing or empty." -ForegroundColor Red
+        Write-Host "SendEmail is true but the 'Smtp' section in Ricoh-Monitor.json is missing or empty." -ForegroundColor Red
         Write-Host "Add Smtp.{Server, Port, Username, Password, From, To} and re-run." -ForegroundColor Red
         return
     }
@@ -1128,7 +1203,12 @@ function Invoke-ParallelProbe {
             } else {
                 $r.Status = 'WrongDevice'
             }
-        } catch {}
+        } catch {
+            # Any failure opening the COM object or talking SNMP = NoResponse.
+            # The $r object already has Status = 'NoResponse' from its
+            # initialization, so we deliberately swallow the exception here.
+            Write-Debug "Probe of $IP failed: $_"
+        }
         return $r
     }
 
@@ -1189,7 +1269,7 @@ function Find-RicohPrintersInCidr {
 # -----------------------------------------------------------------------------
 # Save-PrintersToConfig
 #
-# Merges the given printers into printers_config.json, preserving existing
+# Merges the given printers into Ricoh-Monitor.json, preserving existing
 # entries and the SendEmail flag. IPs already in the config are skipped
 # (no duplicates). Creates the file if missing. Returns the count of
 # printers actually added (excluding duplicates).
@@ -1200,6 +1280,9 @@ function Find-RicohPrintersInCidr {
 # Returns a placeholder Smtp block used when generating a fresh config.
 # Fields are example values to show the operator what to fill in.
 function New-DefaultSmtpConfig {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure factory returning a hashtable; changes no external state.')]
+    param()
     return [ordered]@{
         Server   = "smtp.example.com"
         Port     = 587
@@ -1213,7 +1296,7 @@ function New-DefaultSmtpConfig {
 function Save-PrintersToConfig {
     param(
         [array]$Printers,
-        [string]$ConfigPath = "printers_config.json"
+        [string]$ConfigPath = "Ricoh-Monitor.json"
     )
 
     if (Test-Path $ConfigPath) {
@@ -1256,7 +1339,7 @@ function Save-PrintersToConfig {
 function Add-DiscoveredToConfig {
     param(
         [array]$Found,
-        [string]$ConfigPath = "printers_config.json"
+        [string]$ConfigPath = "Ricoh-Monitor.json"
     )
 
     $confirm = Read-Host "Add these to $ConfigPath ? (y/N)"
@@ -1275,7 +1358,7 @@ function Add-DiscoveredToConfig {
 # -----------------------------------------------------------------------------
 # Invoke-FirstRunDiscovery
 #
-# Runs automatically on the very first launch (when printers_config.json
+# Runs automatically on the very first launch (when Ricoh-Monitor.json
 # doesn't exist). Differences from interactive -Discover mode:
 #   - Auto-adds discovered printers without confirmation.
 #   - Loops on the prompt-for-CIDR step until either printers are found or
@@ -1284,7 +1367,7 @@ function Add-DiscoveredToConfig {
 #     don't re-trigger this first-run flow.
 # -----------------------------------------------------------------------------
 function Invoke-FirstRunDiscovery {
-    param([string]$ConfigPath = "printers_config.json")
+    param([string]$ConfigPath = "Ricoh-Monitor.json")
 
     Write-Host "=== First-run setup ===" -ForegroundColor Cyan
     Write-Host "No config file found. Discovering Ricoh printers on the network..."
@@ -1339,14 +1422,14 @@ function Invoke-FirstRunDiscovery {
 }
 
 # -----------------------------------------------------------------------------
-# Get-KnownSubnets
+# Get-KnownSubnet
 #
 # Derives the unique /24 subnets covered by the printers currently in the
 # config. Used by Invoke-NewPrinterScan to know what to sweep. Grouping is
 # done on the first three octets of each IP - cheap, no SNMP, no mask math,
 # and correct for every "/24 printer VLAN" layout small offices use.
 # -----------------------------------------------------------------------------
-function Get-KnownSubnets {
+function Get-KnownSubnet {
     param([array]$Printers)
     $subnets = @()
     foreach ($p in $Printers) {
@@ -1370,10 +1453,10 @@ function Get-KnownSubnets {
 function Invoke-NewPrinterScan {
     param(
         [array]$Printers,
-        [string]$ConfigPath = "printers_config.json"
+        [string]$ConfigPath = "Ricoh-Monitor.json"
     )
 
-    $subnets = Get-KnownSubnets -Printers $Printers
+    $subnets = Get-KnownSubnet -Printers $Printers
     if ($subnets.Count -eq 0) {
         return @()
     }
@@ -1499,14 +1582,19 @@ try {
         return
     }
 
+    if ($TestSmtp) {
+        Invoke-SmtpTest
+        return
+    }
+
     Write-Host "Starting printer monitoring..." -ForegroundColor Cyan
 
     # --- Step 0: first-run bootstrap -----------------------------------------
     # If no config exists, auto-discover printers on the local subnet and
-    # write them to printers_config.json before we proceed. The function
+    # write them to Ricoh-Monitor.json before we proceed. The function
     # always leaves a config file on disk (empty if nothing was found and
     # the user gave up), so subsequent runs go straight to Step 1.
-    if (-not (Test-Path "printers_config.json")) {
+    if (-not (Test-Path "Ricoh-Monitor.json")) {
         Invoke-FirstRunDiscovery
     }
 
@@ -1519,7 +1607,7 @@ try {
 
     # --- Step 1.5: scan known subnets for newly-installed printers ----------
     # Sweeps every /24 covered by the existing config. New Ricoh hits are
-    # auto-added to printers_config.json so the next verify+collect pass
+    # auto-added to Ricoh-Monitor.json so the next verify+collect pass
     # includes them in this month's report.
     $newPrinters = Invoke-NewPrinterScan -Printers $printers
     if ($newPrinters.Count -gt 0) {
