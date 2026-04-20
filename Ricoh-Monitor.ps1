@@ -980,7 +980,7 @@ function Invoke-SmtpTest {
     Write-Host "=== SMTP Test ===" -ForegroundColor Cyan
     Write-Host ("  Server:   {0}:{1}" -f $smtp.Server, $smtp.Port)
     Write-Host ("  Username: {0}" -f $smtp.Username)
-    Write-Host ("  From:     {0}" -f $smtp.From)
+    Write-Host ("  From:     {0}" -f (Format-SmtpFromField $smtp))
     Write-Host ("  To:       {0}" -f (@($smtp.To) -join ', '))
     Write-Host ""
 
@@ -1003,7 +1003,7 @@ function Invoke-SmtpTest {
     )
 
     try {
-        Send-MailMessage -From $smtp.From `
+        Send-MailMessage -From (Format-SmtpFromField $smtp) `
                         -To $smtp.To `
                         -Subject $subject `
                         -Body $body `
@@ -1067,7 +1067,7 @@ function Send-Report {
         # (DNS failure, auth failure, etc.) into terminating ones so the
         # catch block below actually fires instead of letting execution
         # fall through to the success message.
-        Send-MailMessage -From $SmtpConfig.From `
+        Send-MailMessage -From (Format-SmtpFromField $SmtpConfig) `
                         -To $SmtpConfig.To `
                         -Subject $subject `
                         -Body $html `
@@ -1289,8 +1289,21 @@ function New-DefaultSmtpConfig {
         Username = "user@example.com"
         Password = ""
         From     = "user@example.com"
+        FromName = "RICOH Monitor"
         To       = @("recipient1@example.com", "recipient2@example.com")
     }
+}
+
+# Builds the From field for Send-MailMessage. If FromName is set in the
+# config, returns the RFC 5322 "Display Name <addr@host>" form so the
+# recipient's client shows a friendly sender name instead of just the
+# mailbox. Falls back to the bare address when FromName is absent/empty.
+function Format-SmtpFromField {
+    param([object]$SmtpConfig)
+    $addr = $SmtpConfig.From
+    $name = $SmtpConfig.FromName
+    if ([string]::IsNullOrWhiteSpace("$name")) { return $addr }
+    return "$name <$addr>"
 }
 
 function Save-PrintersToConfig {
