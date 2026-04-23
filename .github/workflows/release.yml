@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PS2EXE
+        shell: powershell
+        run: |
+          Install-Module -Name PS2EXE -Scope CurrentUser -Force -AllowClobber
+
+      - name: Compile EXE
+        shell: powershell
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          # Normalize to 4-part Win32 FileVersion (e.g. 1.0.0 -> 1.0.0.0)
+          $parts = $tag.Split("-")[0].Split(".")
+          while ($parts.Count -lt 4) { $parts += "0" }
+          $ver = ($parts[0..3] -join ".")
+          Invoke-PS2EXE `
+            -InputFile  ".\Ricoh-Monitor.ps1" `
+            -OutputFile ".\Ricoh-Monitor.exe" `
+            -Title       "Ricoh Monitor" `
+            -Description "Ricoh IM-series SNMP monitor" `
+            -Company     "alexdelprete" `
+            -Product     "Ricoh-Monitor" `
+            -Version     $ver
+
+      - name: Verify EXE produced
+        shell: powershell
+        run: |
+          if (-not (Test-Path ".\Ricoh-Monitor.exe")) { throw "EXE not produced" }
+          Get-Item ".\Ricoh-Monitor.exe" | Format-List Name, Length, LastWriteTime
+
+      - name: Compute SHA256
+        shell: powershell
+        run: |
+          $hash = Get-FileHash ".\Ricoh-Monitor.exe" -Algorithm SHA256
+          "$($hash.Hash)  Ricoh-Monitor.exe" | Out-File -FilePath ".\Ricoh-Monitor.exe.sha256" -Encoding ascii
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            Ricoh-Monitor.exe
+            Ricoh-Monitor.exe.sha256
+          body: |
+            ## Ricoh-Monitor ${{ github.ref_name }}
+
+            Compiled Windows binary of `Ricoh-Monitor.ps1` built with PS2EXE on `windows-latest`.
+
+            ### Downloads
+
+            - **`Ricoh-Monitor.exe`** — standalone EXE, no PowerShell execution-policy tweak required
+            - **`Ricoh-Monitor.exe.sha256`** — SHA-256 checksum for integrity verification
+
+            ### Deployment
+
+            Drop the EXE in a folder and run it once to generate `Ricoh-Monitor.json`. Edit the config, then schedule monthly via Task Scheduler. See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for full instructions.
+
+            ### Notes
+
+            The binary is **unsigned**. On first interactive launch Windows SmartScreen may warn
+            "Windows protected your PC" — click *More info* -> *Run anyway*, or strip the
+            Mark-of-the-Web with `Unblock-File .\Ricoh-Monitor.exe` before launching. Task
+            Scheduler does not trigger SmartScreen.
+
+            If Microsoft Defender quarantines the EXE (PS2EXE binaries occasionally hit
+            heuristic false positives), submit the file hash to
+            [Microsoft Security Intelligence](https://www.microsoft.com/wdsi/filesubmission)
+            or add a Defender exclusion for the install folder.
