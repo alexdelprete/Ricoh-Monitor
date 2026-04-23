@@ -17,7 +17,7 @@ A PowerShell script (compilable to EXE) that monitors Ricoh IM-series printers v
 - Clean dark-mode 2-column report with colored toner bars and spec-accurate sentinel handling (`-100 = Almost Empty`, `-2 = Unknown`, `0 = Empty`, `-3 = Some Left`)
 - Self-contained: no external PowerShell modules, no external executables, pure .NET + COM
 - Diagnostic switches for SNMP (`-TestSnmp`) and SMTP (`-TestSmtp`) so you can isolate problems
-- Compilable to a standalone EXE so Task Scheduler doesn't hit execution-policy prompts
+- Prebuilt Windows EXE published to [GitHub Releases](https://github.com/alexdelprete/Ricoh-Monitor/releases/latest) for Task Scheduler use (no execution-policy tweak required)
 
 ## System Requirements
 
@@ -120,16 +120,63 @@ If the report looks right, move on to enabling email (or just leave it disabled 
 
 3. Once `-TestSmtp` succeeds, set `"SendEmail": true` in `Ricoh-Monitor.json` and run normally — you should receive the full report by email.
 
-## Compiling to a Standalone EXE
+## Running as a Standalone EXE
 
-Task Scheduler running a `.ps1` can hit execution-policy prompts depending on machine settings. Compiling to an EXE sidesteps that entirely — the binary runs regardless of policy.
+Task Scheduler running a `.ps1` can hit execution-policy prompts depending on machine settings. Running the EXE build sidesteps that entirely — an EXE isn't a PowerShell script, so no policy applies. Two ways to get the binary:
+
+### Option A — Download the prebuilt EXE (recommended)
+
+Every `v*` tag pushed to this repo triggers a GitHub Actions workflow that compiles `Ricoh-Monitor.ps1` on `windows-latest` and publishes the signed-by-GitHub binary to the [Releases page](https://github.com/alexdelprete/Ricoh-Monitor/releases). Grab the latest:
+
+```powershell
+# Always-latest (no version bump needed when a new release ships)
+Invoke-WebRequest `
+  -Uri "https://github.com/alexdelprete/Ricoh-Monitor/releases/latest/download/Ricoh-Monitor.exe" `
+  -OutFile ".\Ricoh-Monitor.exe"
+
+# Optional: grab the matching SHA-256 and verify
+Invoke-WebRequest `
+  -Uri "https://github.com/alexdelprete/Ricoh-Monitor/releases/latest/download/Ricoh-Monitor.exe.sha256" `
+  -OutFile ".\Ricoh-Monitor.exe.sha256"
+
+$expected = (Get-Content ".\Ricoh-Monitor.exe.sha256").Split(" ")[0]
+$actual   = (Get-FileHash ".\Ricoh-Monitor.exe" -Algorithm SHA256).Hash
+if ($expected -ne $actual) { throw "Checksum mismatch" } else { "OK" }
+
+# Strip the Mark-of-the-Web so Windows doesn't flag it on first launch
+Unblock-File ".\Ricoh-Monitor.exe"
+```
+
+Or via `curl` (Git Bash / WSL / any non-PowerShell shell):
+
+```bash
+curl -L -o Ricoh-Monitor.exe        https://github.com/alexdelprete/Ricoh-Monitor/releases/latest/download/Ricoh-Monitor.exe
+curl -L -o Ricoh-Monitor.exe.sha256 https://github.com/alexdelprete/Ricoh-Monitor/releases/latest/download/Ricoh-Monitor.exe.sha256
+sha256sum -c Ricoh-Monitor.exe.sha256
+```
+
+To pin a specific version instead of "latest", substitute `v1.0.0` (or any tag from the Releases page) for `latest`:
+
+```text
+https://github.com/alexdelprete/Ricoh-Monitor/releases/download/v1.0.0/Ricoh-Monitor.exe
+```
+
+First interactive launch may trigger **Windows SmartScreen** ("Windows protected your PC") because the binary is unsigned — click *More info* → *Run anyway* once, or the `Unblock-File` above prevents the prompt from appearing at all. Task Scheduler does **not** trigger SmartScreen.
+
+If Microsoft Defender quarantines the EXE (PS2EXE binaries occasionally hit heuristic false positives like `Trojan:Win32/Wacatac.B!ml`), either submit the file hash to [Microsoft Security Intelligence](https://www.microsoft.com/wdsi/filesubmission) for whitelisting, or add a Defender folder exclusion for the install location.
+
+### Option B — Compile it yourself
+
+If you don't want to trust the prebuilt binary, or you need to patch the script first, compile locally with PS2EXE. You need PowerShell on Windows; `Install-Module` requires a working PowerShell Gallery connection.
 
 ```powershell
 Install-Module -Name PS2EXE -Scope CurrentUser
 Invoke-PS2EXE -InputFile ".\Ricoh-Monitor.ps1" -OutputFile ".\Ricoh-Monitor.exe"
 ```
 
-Deploy `Ricoh-Monitor.exe` **alongside** `Ricoh-Monitor.json` in the same folder — the EXE reads the JSON at runtime, exactly like the script does. The config is always external: operators can edit recipients or printer IPs without rebuilding, and credentials are not baked into the binary.
+### Config stays external
+
+Whether you downloaded the EXE or compiled it yourself, deploy `Ricoh-Monitor.exe` **alongside** `Ricoh-Monitor.json` in the same folder — the EXE reads the JSON at runtime, exactly like the script does. Credentials are never baked into the binary, so operators can edit recipients or printer IPs without rebuilding, and the same EXE is safe to share across machines that each need their own config.
 
 > **Security note:** a PS2EXE binary is not encrypted; embedding credentials in source before compiling is not a security boundary (the source is trivially recoverable). Keep the config external and lock it down with NTFS permissions instead.
 
