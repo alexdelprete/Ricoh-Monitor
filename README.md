@@ -120,18 +120,20 @@ If the report looks right, move on to enabling email (or just leave it disabled 
 
 3. Once `-TestSmtp` succeeds, set `"SendEmail": true` in `Ricoh-Monitor.json` and run normally — you should receive the full report by email.
 
-## Scheduling the Monthly Run
+## Compiling to a Standalone EXE
 
-### Optional: compile to EXE
-
-Task Scheduler running a `.ps1` can hit execution-policy prompts depending on machine settings. Compiling to an EXE sidesteps that entirely.
+Task Scheduler running a `.ps1` can hit execution-policy prompts depending on machine settings. Compiling to an EXE sidesteps that entirely — the binary runs regardless of policy.
 
 ```powershell
 Install-Module -Name PS2EXE -Scope CurrentUser
 Invoke-PS2EXE -InputFile ".\Ricoh-Monitor.ps1" -OutputFile ".\Ricoh-Monitor.exe"
 ```
 
-Both the `.ps1` and the `.exe` read the same `Ricoh-Monitor.json`.
+Deploy `Ricoh-Monitor.exe` **alongside** `Ricoh-Monitor.json` in the same folder — the EXE reads the JSON at runtime, exactly like the script does. The config is always external: operators can edit recipients or printer IPs without rebuilding, and credentials are not baked into the binary.
+
+> **Security note:** a PS2EXE binary is not encrypted; embedding credentials in source before compiling is not a security boundary (the source is trivially recoverable). Keep the config external and lock it down with NTFS permissions instead.
+
+## Scheduling the Monthly Run
 
 ### Register the scheduled task
 
@@ -287,3 +289,42 @@ Other Ricoh IM C models are very likely to work — the OID set used is the stan
 ### Feedback
 
 Have you tested this tool with other Ricoh models? Let me know which models work (or don't) for you — feedback helps improve compatibility.
+
+## References
+
+External sources used to identify and verify the OIDs, types and sentinel values this script relies on:
+
+### Ricoh Private MIB Specification (Part 4)
+
+The authoritative source for every OID in the script. Published by Ricoh, distributed through the Ricoh Developer Program (RiDP) portal. Registration (free Basic Membership) required for the current version.
+
+- Official (current v4.260, registration required): <https://ricoh-ridp.com/resources/downloads/private-mib-specification-v4260>
+- Ricoh Developer Program EMEA overview: <https://emea.ricoh-developer.com/about-us/membership/premier-membership-benefits/private-mib-specification-overview>
+- Older PDF (v4.050-4, April 2012) used during development — not hosted officially anymore, third-party mirrors:
+  - Internet Archive: <https://archive.org/details/294-privatemibspecificationv-4-050-4>
+  - iobroker forum: <https://forum.iobroker.net/assets/uploads/files/294_privatemibspecificationv4_050-4.pdf>
+
+Specific parts of the spec consulted while writing this tool:
+
+- `ricohSysDescr` group (`.1.3.6.1.4.1.367.3.2.1.1.1.*`) — model, manufacturer, firmware descriptors
+- `ricohEngStat` (`.2.2.*`) — error state codes and their meanings (`0 = noError`, `2 = feedError`, `3 = hardwareError`, `4 = servicemanCall`)
+- `ricohEngCounter` (`.2.19.*`) — scalar counters (`Total`, `Printer`, `Copier`, `Fax`)
+- `ricohEngCounterTable` (`.2.19.5.1`) — per-counter value column (`.9.X = ricohEngCounterValue`); per-index meanings live in per-model-family tables (`Table 3.2.1.2.19.5.1.1-<modelCode>`). The IM-series mapping isn't in the 2012 PDF, so the index meanings used here were verified by cross-check against the printer's own web counter page (see below).
+- `ricohEngToner` (`.2.24.*`) — toner level column `.1.1.5` (`ricohEngTonerLevel`), with spec-defined sentinels (`-100 = near empty`, `0 = empty`, `-2 = unknown`, `-3 = some left`, Table `3.2.1.2.24.1.1.5`)
+- `ricohNetIp` (`.7.2.1.*`) — network group; `.7 = ricohNetIpPhysicalAddress` (MAC), `.3 = ricohNetIp` (IP, IpAddress type)
+
+### Other MIB browsers (cross-reference, partial)
+
+Used to double-check symbolic names before cracking open the PDF. Both expose the top-level tree but don't enumerate all leaves, which is why the official PDF was needed.
+
+- Observium MIB browser: <https://mibs.observium.org/mib/RicohPrivateMIB/>
+- IANA Private Enterprise root (367 = Ricoh Co. Ltd.): <https://www.iana.org/assignments/enterprise-numbers/>
+
+### Per-device web counter page
+
+Each Ricoh IM printer exposes a `Web Image Monitor` HTTP interface with a "Counter" page that lists the same values SNMP returns — used as ground-truth to verify that index meanings under `.19.5.1.9.X` (Full Color / B&W / Single Color / Two-color, Copier vs Printer) map correctly on IM-series firmware. Access URL: `http://<printer-ip>/web/guest/en/websys/webArch/mainFrame.cgi`.
+
+### RFCs / standard MIBs referenced for context
+
+- [RFC 3805](https://datatracker.ietf.org/doc/html/rfc3805) — Printer MIB v2. Ricoh's private MIB doesn't strictly follow it, but the sentinel conventions for "toner level" (negative values as status codes) are conceptually similar.
+- [RFC 3411](https://datatracker.ietf.org/doc/html/rfc3411) / [RFC 3412](https://datatracker.ietf.org/doc/html/rfc3412) — SNMPv3 framework (this script uses v2c; these are reference only).
