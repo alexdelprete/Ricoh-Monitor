@@ -8,6 +8,7 @@ report_*.html
 
 # Editor/IDE junk
 .vscode/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db
